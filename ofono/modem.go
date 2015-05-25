@@ -246,6 +246,21 @@ func (modem *Modem) ActivateMMSContext(preferredContext dbus.ObjectPath) (OfonoC
 	if err != nil {
 		return OfonoContext{}, err
 	}
+
+	// Set PoweredForMMS to start attachment
+	modemProxy := modem.conn.Object("org.ofono", modem.Modem)
+	_, err = modemProxy.Call(CONNECTION_MANAGER_INTERFACE, "SetProperty",
+		"PoweredForMMS", dbus.Variant{true})
+	if err != nil {
+		return OfonoContext{}, err
+	}
+
+	if !modem.waitAttached() {
+		modemProxy.Call(CONNECTION_MANAGER_INTERFACE, "SetProperty",
+			"PoweredForMMS", dbus.Variant{false})
+		return OfonoContext{}, errors.New("modem not attached")
+	}
+
 	for _, context := range contexts {
 		if context.isActive() {
 			return context, nil
@@ -256,16 +271,80 @@ func (modem *Modem) ActivateMMSContext(preferredContext dbus.ObjectPath) (OfonoC
 			log.Println("Failed to activate for", context.ObjectPath, ":", err)
 		}
 	}
+
+	modemProxy.Call(CONNECTION_MANAGER_INTERFACE, "SetProperty",
+		"PoweredForMMS", dbus.Variant{false})
 	return OfonoContext{}, errors.New("no context available to activate")
+}
+
+func (modem *Modem) waitAttached() bool {
+
+	connManSignal, err := connectToPropertySignal(modem.conn, modem.Modem,
+		CONNECTION_MANAGER_INTERFACE)
+	if err != nil {
+		log.Println("Cannot connect to conn manager signal", err)
+		return false
+	}
+	defer connManSignal.Cancel()
+
+	// Check if attached and wait for it if necessary
+	v, err := modem.getProperty(CONNECTION_MANAGER_INTERFACE, "Attached")
+	if err != nil {
+		log.Print("Cannot get Attached property: %s", err)
+		return false
+	}
+	attached := reflect.ValueOf(v.Value).Bool()
+
+	if attached {
+		log.Print("Modem is attached")
+		return attached
+	}
+
+	const waitAttachSec = 40
+	timer := time.After(waitAttachSec * time.Second)
+waitAttachLoop:
+	for {
+		select {
+		case msg, ok := <-connManSignal.C:
+			if !ok {
+				log.Print("Error while waiting for attach")
+				return attached
+			}
+			var propName string
+			var propValue dbus.Variant
+			if err := msg.Args(&propName, &propValue); err != nil {
+				log.Printf("Cannot interpret property change: %s", err)
+				return attached
+			}
+			if propName != "Attached" {
+				continue
+			}
+			attached = reflect.ValueOf(propValue.Value).Bool()
+			log.Print("Attached changed to ", attached)
+			break waitAttachLoop
+		case <-timer:
+			log.Print("Cannot attach after ", waitAttachSec, " secs")
+			return attached
+		}
+	}
+
+	return attached
 }
 
 //DeactivateMMSContext deactivates the context if it is of type mms
 func (modem *Modem) DeactivateMMSContext(context OfonoContext) error {
-	if context.isTypeInternet() {
-		return nil
+	// isActive gives state previous to possible activation by nuntium
+	if !context.isActive() {
+		err := context.toggleActive(false, modem.conn)
+		if err != nil {
+			log.Println("Cannot deactivate, error:", err)
+		}
 	}
 
-	return context.toggleActive(false, modem.conn)
+	modemProxy := modem.conn.Object("org.ofono", modem.Modem)
+	_, err := modemProxy.Call(CONNECTION_MANAGER_INTERFACE, "SetProperty",
+		"PoweredForMMS", dbus.Variant{false})
+	return err
 }
 
 func activationErrorNeedsWait(err error) bool {
@@ -276,7 +355,7 @@ func activationErrorNeedsWait(err error) bool {
 }
 
 func (context OfonoContext) toggleActive(state bool, conn *dbus.Connection) error {
-	log.Println("Trying to set Active property to", state, "for context on", state, context.ObjectPath)
+	log.Println("Trying to set Active property to", state, "for", context.ObjectPath)
 	obj := conn.Object("org.ofono", context.ObjectPath)
 	for i := 0; i < 3; i++ {
 		_, err := obj.Call(CONNECTION_CONTEXT_INTERFACE, "SetProperty", "Active", dbus.Variant{state})
@@ -289,7 +368,7 @@ func (context OfonoContext) toggleActive(state bool, conn *dbus.Connection) erro
 			return nil
 		}
 	}
-	return errors.New("failed to activate context")
+	return errors.New("failed to change Active property")
 }
 
 func (oContext OfonoContext) isTypeInternet() bool {
@@ -390,7 +469,7 @@ func (modem *Modem) GetMMSContexts(preferredContext dbus.ObjectPath) (mmsContext
 	}
 
 	for _, context := range contexts {
-		if (context.isTypeInternet() && context.isActive() && context.hasMessageCenter()) || context.isTypeMMS() {
+		if (context.isTypeInternet() && context.hasMessageCenter()) || context.isTypeMMS() {
 			if context.isPreferred() {
 				mmsContexts = []OfonoContext{context}
 				break
