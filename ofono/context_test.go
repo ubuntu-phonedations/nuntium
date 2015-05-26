@@ -98,9 +98,10 @@ func (s *ContextTestSuite) TestMMSOverInactiveInternet(c *C) {
 	}
 	s.contexts = append(s.contexts, context1)
 
-	context, err := s.modem.GetMMSContexts("")
-	c.Check(context, IsNil)
-	c.Assert(err, DeepEquals, errors.New("No mms contexts found"))
+	contexts, err := s.modem.GetMMSContexts("")
+	c.Assert(err, IsNil)
+	c.Assert(len(contexts), Equals, 1)
+	c.Check(contexts[0], DeepEquals, context1)
 }
 
 func (s *ContextTestSuite) TestMMSOverInternetNoProxy(c *C) {
@@ -229,12 +230,6 @@ func (s *ContextTestSuite) TestMMSMoreThanOneValidContextPreferredNoMatch(c *C) 
 }
 
 func (s *ContextTestSuite) TestMMSMoreThanOneValidContext2Active(c *C) {
-	context0 := OfonoContext{
-		ObjectPath: "/ril_0/context0",
-		Properties: makeGenericContextProperty("Context0", contextTypeInternet, false, true, false, false),
-	}
-	s.contexts = append(s.contexts, context0)
-
 	context1 := OfonoContext{
 		ObjectPath: "/ril_0/context1",
 		Properties: makeGenericContextProperty("Context1", contextTypeMMS, false, true, false, false),
