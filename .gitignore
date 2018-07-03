@@ -1,5 +1,0 @@
-**/*.swp
-cmd/nuntium/nuntium
-cmd/nuntium-decode-cli/nuntium-decode-cli
-cmd/nuntium-inject-push/nuntium-inject-push
-test/test
